@@ -14,7 +14,15 @@ const MAX_RECENT = 15;
 
 // ---------- config ----------
 function loadConfig() {
-  const defaults = { pinned: [], recent: [], passwordLength: 32, bitwardenServer: '' };
+  const defaults = {
+    pinned: [],
+    recent: [],
+    selectedRepos: [],
+    usernamePostfix: 'USERNAME',
+    passwordPostfix: 'PASSWORD',
+    passwordLength: 32,
+    bitwardenServer: '',
+  };
   if (!existsSync(CONFIG_PATH)) return defaults;
   try {
     return { ...defaults, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) };
@@ -86,9 +94,6 @@ export function generatePasswordWithBitwarden(length = 32) {
   }
 }
 
-export function toSecretPrefix(name) {
-  return name.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').replace(/^(\d)/, '_$1');
-}
 
 function validateSecretName(v) {
   if (!/^[A-Z_][A-Z0-9_]*$/.test(v)) return 'Use only A-Z, 0-9 and _, not starting with a digit';
@@ -159,8 +164,9 @@ async function selectRepos(cfg) {
   const add = (repo, label, checked = false) => {
     if (seen.has(repo)) return;
     seen.add(repo);
-    choices.push({ name: `${label} ${repo}`, value: repo, checked });
+    choices.push({ name: `${label} ${repo}`, value: repo, checked: checked || cfg.selectedRepos.includes(repo) });
   };
+  cfg.selectedRepos.forEach((r) => add(r, cfg.pinned.includes(r) ? '★' : '↺', true));
   cfg.pinned.forEach((r) => add(r, '★'));
   cfg.recent.forEach((r) => add(r, '↺'));
   fromGithub.forEach((r) => add(r, ' '));
@@ -200,8 +206,63 @@ async function managePinned(cfg) {
 }
 
 // ---------- main flow ----------
+async function chooseRepos(cfg) {
+  if (cfg.selectedRepos.length) {
+    const reuse = await select({
+      message: 'Repositories:',
+      choices: [
+        { name: `Use same as last time: ${cfg.selectedRepos.join(', ')}`, value: true },
+        { name: 'Change selection', value: false },
+      ],
+    });
+    if (reuse) return cfg.selectedRepos;
+  }
+  const repos = await selectRepos(cfg);
+  if (repos.length) {
+    cfg.selectedRepos = repos;
+    saveConfig(cfg);
+  }
+  return repos;
+}
+
+const normalizePart = (v) => v.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+
 async function createSecret(cfg) {
-  const name = (await input({ message: 'Describing name for the secret (e.g. "Prod Postgres"):', required: true })).trim();
+  // 1. Repositories (remembered for the next secret)
+  const repos = await chooseRepos(cfg);
+  if (!repos.length) {
+    console.log('No repositories selected, aborting.');
+    return;
+  }
+
+  // 2. Secret prefix and postfixes → <PREFIX>_<POSTFIX>
+  const prefix = normalizePart(
+    await input({
+      message: 'Secret prefix (e.g. PROD_DB):',
+      required: true,
+      validate: (v) => validateSecretName(normalizePart(v)),
+      transformer: (v, { isFinal }) => (isFinal ? normalizePart(v) : v),
+    }),
+  );
+  const postfix = async (message, def) =>
+    normalizePart(
+      await input({ message, default: def, required: true, validate: (v) => /[A-Za-z0-9]/.test(v) || 'Required' }),
+    );
+  const userPostfix = await postfix('Postfix for username secret:', cfg.usernamePostfix);
+  const passPostfix = await postfix('Postfix for password secret:', cfg.passwordPostfix);
+  const userSecret = `${prefix}_${userPostfix}`;
+  const passSecret = `${prefix}_${passPostfix}`;
+  if (userSecret === passSecret) {
+    console.log('Username and password secret names must differ, aborting.');
+    return;
+  }
+  cfg.usernamePostfix = userPostfix;
+  cfg.passwordPostfix = passPostfix;
+  saveConfig(cfg);
+  console.log(`  → ${userSecret}, ${passSecret}`);
+
+  // 3. Bitwarden item details
+  const name = (await input({ message: 'Describing name for the Bitwarden item:', default: prefix, required: true })).trim();
   const username = (await input({ message: 'Username:', required: true })).trim();
 
   const length = await number({ message: 'Password length:', default: cfg.passwordLength, min: 12, max: 128 });
@@ -209,16 +270,6 @@ async function createSecret(cfg) {
   const source = pw ? 'Bitwarden' : 'local fallback';
   pw ??= generatePassword(length);
   console.log(`Generated password via ${source}: ${pw.slice(0, 3)}${'*'.repeat(pw.length - 3)} (${pw.length} chars)`);
-
-  const prefix = toSecretPrefix(name);
-  const userSecret = await input({ message: 'GitHub secret name for username:', default: `${prefix}_USERNAME`, validate: validateSecretName });
-  const passSecret = await input({ message: 'GitHub secret name for password:', default: `${prefix}_PASSWORD`, validate: validateSecretName });
-
-  const repos = await selectRepos(cfg);
-  if (!repos.length) {
-    console.log('No repositories selected, aborting.');
-    return;
-  }
 
   console.log('\nSummary');
   console.log(`  Bitwarden item : ${name}`);
