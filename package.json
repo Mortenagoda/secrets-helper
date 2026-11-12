@@ -1,0 +1,28 @@
+{
+  "name": "secrets-helper",
+  "version": "1.0.0",
+  "description": "Generate a password, store it in Bitwarden and push it as GitHub Actions secrets",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dry-run": "node index.js --dry-run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@bitwarden/cli": "^2026.10.1",
+    "@inquirer/prompts": "^8.8.0"
+  },
+  "bin": {
+    "bw-gh-secrets": "index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mortenagoda/secrets-helper.git"
+  }
+}
